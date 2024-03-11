@@ -7,12 +7,15 @@ from ctcdecode import CTCBeamDecoder
 import jiwer
 import tqdm
 
+from datasets import load_dataset
 import torch
 from torch import nn
+from constants import PHONEME_WEIGHTS
 import torch.nn.functional as F
 
 from read_emg import EMGDataset, SizeAwareSampler
-from architecture import Model
+from align import align_from_distances
+from architecture import Model, KoLeoLoss, CrossConLoss
 from data_utils import combine_fixed_length, decollate_tensor
 
 from absl import flags
@@ -26,6 +29,12 @@ flags.DEFINE_integer('learning_rate_patience', 5, 'learning rate decay patience'
 flags.DEFINE_string('start_training_from', None, 'start training from this model')
 flags.DEFINE_float('l2', 0, 'weight decay')
 flags.DEFINE_string('evaluate_saved', None, 'run evaluation on given model file')
+flags.DEFINE_float('emg_ctc_loss_weight', 1.0, 'emg loss weighting')
+flags.DEFINE_float('audio_ctc_loss_weight', 1.0, 'audio loss weighting')git remote -v
+flags.DEFINE_float('crosscon_loss_weight', 1.0, 'crosscon loss weighting')
+flags.DEFINE_float('suptcon_loss_weight', 1.0, 'suptcon loss weighting')
+flags.DEFINE_float('koleo_loss_weight', 0.1, 'koleo loss weighting')
+
 
 def test(model, testset, device):
     model.eval()
@@ -59,9 +68,12 @@ def test(model, testset, device):
 
 
 def train_model(trainset, devset, device, n_epochs=200):
+    crosscon_loss_function = CrossConLoss()
+    weighted_suptcon_loss_function = WeightedSupTConLoss(PHONEME_WEIGHTS)
+    koleo_loss_function = KoLeoLoss()
+
     dataloader = torch.utils.data.DataLoader(trainset, pin_memory=(device=='cuda'), num_workers=0, collate_fn=EMGDataset.collate_raw, batch_sampler=SizeAwareSampler(trainset, 128000))
-
-
+                                 
     n_chars = len(devset.text_transform.chars)
     model = Model(devset.num_features, n_chars+1).to(device)
 
@@ -89,16 +101,65 @@ def train_model(trainset, devset, device, n_epochs=200):
         for example in tqdm.tqdm(dataloader, 'Train step', disable=None):
             schedule_lr(batch_idx)
 
-            X = combine_fixed_length(example['emg'], 200).to(device)
-            X_raw = combine_fixed_length(example['raw_emg'], 200*8).to(device)
+            emg = combine_fixed_length(example['raw_emg'], 200*8).to(device)
+            emg_voiced_parallel = combine_fixed_length(example['parallel_voiced_emg'], 200*8).to(device)
+            audio = combine_fixed_length(example['parallel_voiced_audio_features'], 200).to(device)
             sess = combine_fixed_length(example['session_ids'], 200).to(device)
 
-            pred = model(X, X_raw, sess)
-            pred = F.log_softmax(pred, 2)
+            phonemes = example['phonemes']
+            emg_length = example['lengths']
+            audio_length = example['audio_feature_lengths']
+            parallel_emg_audio_label = example['text_int']
+            parallel_emg_audio_label_length = example['text_int_lengths']
 
-            pred = nn.utils.rnn.pad_sequence(decollate_tensor(pred, example['lengths']), batch_first=False) # seq first, as required by ctc
-            y = nn.utils.rnn.pad_sequence(example['text_int'], batch_first=True).to(device)
-            loss = F.ctc_loss(pred, y, example['lengths'], example['text_int_lengths'], blank=n_chars)
+            emg_pred, emg_latent, emg_parallel_latent, audio_pred, audio_latent = model(emg, emg_voiced_parallel, emg_length, audio, audio_length, sess)
+
+            emg_pred = nn.utils.rnn.pad_sequence(decollate_tensor(emg_pred, emg_length))
+            audio_pred = nn.utils.rnn.pad_sequence(decollate_tensor(audio_pred, audio_length))
+            emg_audio_label = nn.utils.rnn.pad_sequence(parallel_emg_audio_label, batch_first=True).to(device)
+
+            # Indv modalities ctc losses
+            emg_ctc_loss = F.ctc_loss(emg_pred, parallel_emg_audio_label, emg_length, parallel_emg_audio_label_length)
+            audio_ctc_loss = F.ctc_loss(audio_pred, parallel_emg_audio_label, audio_length, parallel_emg_audio_label_length)
+
+            # TODO: Figure out exactly what should we align, from the paper it sounds like the latents.
+            # Align using aligner from transducer code (since it's silent speech)        
+            emg_latent_concat= torch.concatenate(emg_latent)
+            emg_parallel_concat = torch.concatenate(emg_parallel_latent)
+            costs = torch.cdist(
+                emg_concat, 
+                emg_parallel_concat,
+            ).squeeze(0)
+            alignment = align_from_distances(costs.T.detach().cpu().numpy())
+            emg_parallel_aligned = emg_parallel_concat[alignment]
+            audio_parallel_aligned = audio_latent[alignment]
+            # TODO: I feel like we need to subsample phonemes, not sure what's the sub-sampling rate 
+            phonenmes_alignment = [p // 10 for p in alignment]
+            phoneme_parallel_aligned = phonemes[phonemes_alignment]
+
+            emg_parallel_aligned_concat = torch.concatenate(emg_parallel_aligned)
+            phoneme_parallel_aligned_concat = torch.concatenate(phoneme_parallel_aligned)
+            audio_parallel_aligned_concat = torch.concatenate(audio_parallel_aligned)
+
+            # CrossCon (between silent latent and aligned emg latent)
+            crosscon_loss =  crosscon_loss_function(emg_latent_concat, emg_parallel_aligned_concat)
+
+            # supTcon (between predicted phonemes and emg_latent)
+            wsuptcon_loss = weighted_suptcon_loss_function(emg_latent_concat, phoneme_parallel_aligned)
+
+            # KoLeo Regularizer Loss
+            # SInce we're cross-conning with emg_parallel, let's try it with emg_parallel first.
+            koleo_loss = koleo_loss_function(emg_latent, emg_parallel_aligned_concat) 
+            # koleo_loss = koleo_loss_function(emg_latent, audio_parallel_aligned_concat) 
+
+            loss = (
+                FLAGS.emg_ctc_loss_weight * emg_ctc_loss
+                + FLAGS.audio_ctc_loss_weight * audio_ctc_loss
+                + FLAGS.crosscon_loss_weight * crosscon_loss
+                + FLAGS.suptcon_loss_weight *  wsuptcon_loss
+                + FLAGS.koleo_loss_weight *  koleo_loss
+            )
+
             losses.append(loss.item())
 
             loss.backward()
@@ -136,6 +197,7 @@ def main():
 
     logging.info(sys.argv)
 
+    # EMG Data
     trainset = EMGDataset(dev=False,test=False)
     devset = EMGDataset(dev=True)
     logging.info('output example: %s', devset.example_indices[0])

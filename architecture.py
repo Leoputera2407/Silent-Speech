@@ -51,7 +51,8 @@ class WeightedSupTConLoss(nn.Module):
 
             class_loss = -torch.log(numerator / denominator).mean()
             
-            # Apply weights to the phoneme class, if not present in dict, defaults to 1.0, meaning no extra punishment or reward.
+            # Apply weights to the phoneme class, if not present in dict, defaults to 1.0,
+            # meaning no extra punishment or reward.
             weight = self.weights.get(phoneme_class.item(), 1.0)
             weighted_class_loss = class_loss * weight
 
@@ -75,8 +76,8 @@ class CrossConLoss(nn.Module):
         Returns:
             torch.Tensor: The computed cross-domain contrastive loss.
         """
-        T = x.size(1)  # Time steps
-        B, _, C = x.shape  # Batch size, Time steps, Channels
+        T = x.size(1) 
+        B, _, C = x.shape
 
         combined = torch.concat([x, y], dim=1)  # shape (B, 2T, C)
 
