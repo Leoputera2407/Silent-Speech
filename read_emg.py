@@ -269,10 +269,12 @@ class EMGDataset(torch.utils.data.Dataset):
                 audio_features.append(ex['parallel_voiced_audio_features'])
                 audio_feature_lengths.append(ex['parallel_voiced_audio_features'].shape[0])
                 parallel_emg.append(ex['parallel_voiced_emg'])
+            """ # NOTE: Let's only take parallel data only 
             else:
                 audio_features.append(ex['audio_features'])
                 audio_feature_lengths.append(ex['audio_features'].shape[0])
                 parallel_emg.append(np.zeros(1))
+            """
         phonemes = [ex['phonemes'] for ex in batch]
         emg = [ex['emg'] for ex in batch]
         raw_emg = [ex['raw_emg'] for ex in batch]
