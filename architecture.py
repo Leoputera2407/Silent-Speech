@@ -10,6 +10,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer('model_size', 768, 'number of hidden dimensions')
 flags.DEFINE_integer('num_layers', 6, 'number of layers')
 flags.DEFINE_float('dropout', .2, 'dropout')
+flags.DEFINE_float('suptcon_epsilon', 1e-6, 'epsilon for stability in suptcon')
 
 
 class WeightedSupTConLoss(nn.Module):
@@ -38,18 +39,20 @@ class WeightedSupTConLoss(nn.Module):
         cos_sim = torch.einsum('ik,jk->ij', normalized_embeddings, normalized_embeddings)
         exp_sim = torch.exp(cos_sim)
 
+        eye_mask = torch.eye(phonemes.size(0), dtype=torch.bool, device=embeddings.device)
+        den_mask = ~eye_mask
+
         phoneme_classes = torch.unique(phonemes)
         final_loss = 0.0
 
         for phoneme_class in phoneme_classes:
             class_mask = phonemes == phoneme_class
-            pos_mask = torch.einsum('i,j->ij', class_mask, class_mask) & ~torch.eye(phonemes.size(0), dtype=bool, device=embeddings.device)
-            den_mask = ~torch.eye(phonemes.size(0), dtype=bool, device=embeddings.device)
+            pos_mask = torch.einsum('i,j->ij', class_mask, class_mask) & ~eye_mask
 
             numerator = (exp_sim * pos_mask).sum(dim=1)[class_mask]
             denominator = (exp_sim * den_mask).sum(dim=1)[class_mask]
 
-            class_loss = -torch.log(numerator / denominator).mean()
+            class_loss = -torch.log(numerator / (denominator + FLAGS.suptcon_epsilon)).mean()
             
             # Apply weights to the phoneme class, if not present in dict, defaults to 1.0,
             # meaning no extra punishment or reward.

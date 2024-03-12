@@ -145,7 +145,7 @@ def train_model(trainset, devset, device, n_epochs=200):
             crosscon_loss =  crosscon_loss_function(emg_latent_concat, emg_parallel_aligned_concat)
 
             # supTcon (between predicted phonemes and emg_latent)
-            wsuptcon_loss = weighted_suptcon_loss_function(emg_latent_concat, phoneme_parallel_aligned)
+            wsuptcon_loss = weighted_suptcon_loss_function(emg_latent_concat, phoneme_parallel_aligned_concat)
 
             # KoLeo Regularizer Loss
             # SInce we're cross-conning with emg_parallel, let's try it with emg_parallel first.
