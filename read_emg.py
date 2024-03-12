@@ -286,7 +286,7 @@ class EMGDataset(torch.utils.data.Dataset):
                 silent.append(ex['silent'])
                 session_ids.append(ex['session_ids'])
 
-            """ # NOTE: Let's only take parallel data only 
+            """ # NOTE: Let's only take if silent data is available only 
             else:
                 audio_features.append(ex['audio_features'])
                 audio_feature_lengths.append(ex['audio_features'].shape[0])
