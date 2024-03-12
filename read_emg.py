@@ -264,26 +264,34 @@ class EMGDataset(torch.utils.data.Dataset):
         audio_features = []
         audio_feature_lengths = []
         parallel_emg = []
+        raw_emg = []
+        phonemes = []
+        text_ints = []
+        text_lengths = []
+        lengths = []
+        emg = []
+        silent = []
+        session_ids = [] 
         for ex in batch:
             if ex['silent']:
                 audio_features.append(ex['parallel_voiced_audio_features'])
                 audio_feature_lengths.append(ex['parallel_voiced_audio_features'].shape[0])
                 parallel_emg.append(ex['parallel_voiced_emg'])
+                raw_emg.append(ex['raw_emg'])
+                phonemes.append(ex['phonemes'])
+                text_ints.append(ex['text_int'])
+                text_lengths.append(ex['text_int'].shape[0])
+                lengths.append(ex['emg'].shape[0])
+                emg.append(ex['emg'])
+                silent.append(ex['silent'])
+                session_ids.append(ex['session_ids'])
+
             """ # NOTE: Let's only take parallel data only 
             else:
                 audio_features.append(ex['audio_features'])
                 audio_feature_lengths.append(ex['audio_features'].shape[0])
                 parallel_emg.append(np.zeros(1))
             """
-        phonemes = [ex['phonemes'] for ex in batch]
-        emg = [ex['emg'] for ex in batch]
-        raw_emg = [ex['raw_emg'] for ex in batch]
-        session_ids = [ex['session_ids'] for ex in batch]
-        lengths = [ex['emg'].shape[0] for ex in batch]
-        silent = [ex['silent'] for ex in batch]
-        text_ints = [ex['text_int'] for ex in batch]
-        text_lengths = [ex['text_int'].shape[0] for ex in batch]
-
         result = {'audio_features':audio_features,
                   'audio_feature_lengths':audio_feature_lengths,
                   'emg':emg,
