@@ -3,19 +3,18 @@ import sys
 import numpy as np
 import logging
 import subprocess
-from ctcdecode import CTCBeamDecoder
+#from ctcdecode import CTCBeamDecoder
 import jiwer
 import tqdm
 
 from datasets import load_dataset
 import torch
 from torch import nn
-from constants import PHONEME_WEIGHTS
 import torch.nn.functional as F
 
 from read_emg import EMGDataset, SizeAwareSampler
 from align import align_from_distances
-from architecture import Model, KoLeoLoss, CrossConLoss
+from architecture import Model, KoLeoLoss, CrossConLoss, WeightedSupTConLoss
 from data_utils import combine_fixed_length, decollate_tensor
 
 from absl import flags
@@ -30,12 +29,22 @@ flags.DEFINE_string('start_training_from', None, 'start training from this model
 flags.DEFINE_float('l2', 0, 'weight decay')
 flags.DEFINE_string('evaluate_saved', None, 'run evaluation on given model file')
 flags.DEFINE_float('emg_ctc_loss_weight', 1.0, 'emg loss weighting')
-flags.DEFINE_float('audio_ctc_loss_weight', 1.0, 'audio loss weighting')git remote -v
+flags.DEFINE_float('audio_ctc_loss_weight', 1.0, 'audio loss weighting')
 flags.DEFINE_float('crosscon_loss_weight', 1.0, 'crosscon loss weighting')
 flags.DEFINE_float('suptcon_loss_weight', 1.0, 'suptcon loss weighting')
 flags.DEFINE_float('koleo_loss_weight', 0.1, 'koleo loss weighting')
 
+PHONEME_WEIGHTS = {
+    # Lower weights for challenging distinctions, encouraging the model to learn these without heavy penalties
+    'b': 0.5, 'p': 0.5,  # Voiced-voiceless pairs
+    'd': 0.5, 't': 0.5,
+    'g': 0.5, 'k': 0.5,
+    'v': 0.5, 'f': 0.5,
+    'z': 0.5, 's': 0.5,
+    'm': 0.7, 'n': 0.7, 'ng': 0.7,  # Nasals, given their difficulty due to velum positioning
+}
 
+"""
 def test(model, testset, device):
     model.eval()
 
@@ -65,7 +74,7 @@ def test(model, testset, device):
 
     model.train()
     return jiwer.wer(references, predictions)
-
+"""
 
 def train_model(trainset, devset, device, n_epochs=200):
     crosscon_loss_function = CrossConLoss()

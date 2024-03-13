@@ -1,6 +1,7 @@
 import random
 
 from torch import nn
+import torch
 import torch.nn.functional as F
 
 from transformer import TransformerEncoderLayer
@@ -117,8 +118,8 @@ class KoLeoLoss(nn.Module):
         _, I = torch.max(dots, dim=1)  # Find index of max dot product (nearest neighbor)
         return I
 
-    def forward(self, emg_latent, audio_latent, eps=1e-8):
-        joint_embedding = torch.cat([emg_latent, audio_latent], dim=1)
+    def forward(self, emg_latent, emg_parallel_latent, eps=1e-8):
+        joint_embedding = torch.cat([emg_latent, emg_parallel_latent], dim=1)
         joint_embedding = F.normalize(joint_embedding, p=2, dim=1, eps=eps)
         
         I = self.pairwise_NNs_inner(joint_embedding)
@@ -208,8 +209,7 @@ class Model(nn.Module):
         x = self.w_out(x)
 
         return F.log_softmax(x, 2)
-   
-   def _conv(x_raw, conv_block, linear_layer):
+    def _conv(x_raw, conv_block, linear_layer):
         x_raw = x_raw.transpose(1,2) # put channel before time for conv
         x_raw = conv_block(x_raw)
         x_raw = x_raw.transpose(1,2)
@@ -217,7 +217,7 @@ class Model(nn.Module):
 
         return x_raw
 
-   def forward(self, emg_x, emg_voiced_parallel_x, audio_x, session_ids):
+    def forward(self, emg_x, emg_voiced_parallel_x, audio_x, session_ids):
         # emg_x shape is (batch, time, electrode)
         # audio_x is (B, T, C) Mel-specto
         # What's session for?
