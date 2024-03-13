@@ -44,7 +44,7 @@ PHONEME_WEIGHTS = {
     'm': 0.7, 'n': 0.7, 'ng': 0.7,  # Nasals, given their difficulty due to velum positioning
 }
 
-"""
+
 def test(model, testset, device):
     model.eval()
 
@@ -74,7 +74,7 @@ def test(model, testset, device):
 
     model.train()
     return jiwer.wer(references, predictions)
-"""
+
 
 def train_model(trainset, devset, device, n_epochs=200):
     crosscon_loss_function = CrossConLoss()
