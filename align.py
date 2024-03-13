@@ -13,7 +13,8 @@ def time_warp(costs):
     eps = 1e-4
     for i in range(1,costs.shape[0]):
         for j in range(1,costs.shape[1]):
-            dtw[i,j] = costs[i,j] + min(dtw[i-1,j],dtw[i,j-1],dtw[i-1,j-1])
+            dtw[i, j] = costs[i, j] + min([dtw[i-1, j], dtw[i, j-1], dtw[i-1, j-1]])
+
     return dtw
 
 def align_from_distances(distance_matrix, debug=False):

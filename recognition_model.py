@@ -108,12 +108,17 @@ def train_model(trainset, devset, device, n_epochs=200):
     for epoch_idx in range(n_epochs):
         losses = []
         for example in tqdm.tqdm(dataloader, 'Train step', disable=None):
+            if not example['raw_emg']:
+                print("Skipping batch due to empty 'raw_emg'")
+                continue
+    
             schedule_lr(batch_idx)
 
             emg = combine_fixed_length(example['raw_emg'], 200*8).to(device)
             emg_voiced_parallel = combine_fixed_length(example['parallel_voiced_emg'], 200).to(device)
             audio = combine_fixed_length(example['audio_features'], 200).to(device)
             sess = combine_fixed_length(example['session_ids'], 200).to(device)
+            phonemes = torch.concatenate(example['phonemes']).to(device)
 
             emg_length = example['lengths']
             audio_length = example['audio_feature_lengths']
@@ -129,9 +134,10 @@ def train_model(trainset, devset, device, n_epochs=200):
             emg_pred = nn.utils.rnn.pad_sequence(decollate_tensor(emg_pred, emg_length)).to(device)
             emg_latent = nn.utils.rnn.pad_sequence(decollate_tensor(emg_latent, emg_length)).to(device)
             emg_parallel_latent = nn.utils.rnn.pad_sequence(decollate_tensor(emg_parallel_latent, emg_length)).to(device)
+       
+            #audio_pred = F.log_softmax(audio_pred, 2)
             #audio_pred = nn.utils.rnn.pad_sequence(decollate_tensor(audio_pred, audio_length))
             emg_audio_label = nn.utils.rnn.pad_sequence(parallel_emg_audio_label, batch_first=True).to(device)
-            phonemes = nn.utils.rnn.pad_sequence(example['phonemes'], batch_first=True).to(device)
 
             # Indv modalities ctc losses
             emg_ctc_loss = F.ctc_loss(
@@ -148,21 +154,28 @@ def train_model(trainset, devset, device, n_epochs=200):
                 torch.tensor(parallel_emg_audio_label_length, dtype=torch.int), 
             )
             """
+            
             # TODO: Figure out exactly what should we align, from the paper it sounds like the latents.
             # Align using aligner from transducer code (since it's silent speech)        
+            n_batch, n_time, d = emg_latent.shape
+            emg_latent_flat = emg_latent.view(-1, d)
+            emg_parallel_latent_flat = emg_parallel_latent.view(-1, d)
+
             costs = torch.cdist(
-                emg_latent, 
-                emg_parallel_latent,
+                emg_latent_flat, 
+                emg_parallel_latent_flat,
             ).squeeze(0)
             
-            alignment = align_from_distances(costs.permute(0, 2, 1).detach().cpu().numpy())
-            _, aligned_parallel_indices = zip(*alignment)
-            aligned_indices_tensor = torch.tensor(aligned_parallel_indices, dtype=torch.long)
-            emg_parallel_aligned = emg_parallel_latent[aligned_indices_tensor]
+            alignment = align_from_distances(costs.T.detach().cpu().numpy())
+            emg_parallel_aligned_flat = emg_parallel_latent_flat[alignment]
+            emg_parallel_aligned = emg_parallel_aligned_flat.view(n_batch, n_time, d)
+         
             # Phoneme parallels to voiced emg, so it'll be dtw-adjusted the same way
-            # TODO: May need to subsample to phoneme's temporal resolution as per chatgpt suggestion
-            phoneme_parallel_aligned = phonemes[aligned_indices_tensor]
-
+            # TODO: This is quite sketch, and I'm adding subsampling at 8 as per chatGPT suggestion, 
+            # need to think deeper here
+            adjusted_phonemes_indices = [index // 8 for index in alignment]
+            phoneme_parallel_aligned = phonemes[adjusted_phonemes_indices].view(n_batch, n_time)
+           
             # CrossCon (between silent latent and aligned emg latent)
             crosscon_loss =  crosscon_loss_function(emg_latent, emg_parallel_aligned)
 
