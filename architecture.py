@@ -13,6 +13,19 @@ flags.DEFINE_integer('num_layers', 6, 'number of layers')
 flags.DEFINE_float('dropout', .2, 'dropout')
 flags.DEFINE_float('suptcon_epsilon', 1e-6, 'epsilon for stability in suptcon')
 
+# Gaddies way of indexing the phoneme vocabulary. 
+# The index on his dataset relates to the index on this list!
+phoneme_inventory = [
+    'aa','ae','ah','ao','aw',
+    'ax','axr','ay','b','ch',
+    'd','dh','dx','eh','el',
+    'em','en','er','ey','f',
+    'g','hh','hv','ih','iy',
+    'jh','k','l','m','n','nx',
+    'ng','ow','oy','p','r','s',
+    'sh','t','th','uh','uw','v',
+    'w','y','z','zh','sil'
+]
 
 class WeightedSupTConLoss(nn.Module):
     def __init__(self, weights):
@@ -30,13 +43,72 @@ class WeightedSupTConLoss(nn.Module):
         Calculate the Weighted Supervised Contrastive Loss.
 
         Args:
+            embeddings (torch.Tensor): The embeddings for each phoneme, shape (batch_size, time_steps, embedding_dim).
+            phonemes (torch.Tensor): The phoneme classes for each embedding, shape (batch_size, time_steps).
+
+        Returns:
+            torch.Tensor: The calculated loss.
+        """
+        B, T, C = embeddings.size()
+        total_loss = 0.0
+
+        for t in range(T):
+            # Process embeddings one time step at a time
+            emb_t = embeddings[:, t, :]  # shape: (batch_size, embedding_dim)
+            phn_t = phonemes[:, t]  # shape: (batch_size,)
+            
+            normalized_embeddings = F.normalize(emb_t, p=2, dim=1)
+            cos_sim = torch.einsum('ik,jk->ij', normalized_embeddings, normalized_embeddings)
+            exp_sim = torch.exp(cos_sim)
+
+            eye_mask = torch.eye(B, dtype=torch.bool, device=embeddings.device)
+            den_mask = ~eye_mask
+
+            phoneme_classes = torch.unique(phn_t)
+            loss_t = 0.0
+
+            for phoneme_class in phoneme_classes:
+                class_mask = phn_t == phoneme_class
+                pos_mask = torch.einsum('i,j->ij', class_mask, class_mask) & ~eye_mask
+                numerator = (exp_sim * pos_mask).sum(dim=1)[class_mask]
+                denominator = (exp_sim * den_mask).sum(dim=1)[class_mask]
+
+                class_loss = -torch.log(numerator / (denominator + 1e-6)).mean()
+                phonemes_label = phoneme_inventory[phoneme_class.item()]
+                weight = self.weights.get(phonemes_label, 1.0)
+                weighted_class_loss = class_loss * weight
+
+                loss_t += weighted_class_loss
+
+            total_loss += loss_t / len(phoneme_classes)
+
+        return total_loss / T
+    
+
+class WeightedSupTConLoss_2D(nn.Module):
+    def __init__(self, weights):
+        """
+        Initialize the weighted supervised contrastive loss.
+
+        Args:
+            weights (dict): A dictionary mapping phoneme classes to their weights.
+        """
+        super(WeightedSupTConLoss, self).__init__()
+        self.weights = weights
+
+    def forward(self, embeddings, phonemes):
+        """
+        Calculate the Weighted Supervised Contrastive Loss.
+
+        Args:
             embeddings (torch.Tensor): The embeddings for each phoneme, shape (batch_size, embedding_dim).
-            phonemes (torch.Tensor): The phoneme classes for each embedding, shape (batch_size,).
+            phonemes (torch.Tensor): The phoneme classes for each embedding, shape (batch_size, ).
 
         Returns:
             torch.Tensor: The calculated loss.
         """
         normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
+        print(F"Shape of embeddings {embeddings.shape} and phonemes {phonemes.shape}")
         cos_sim = torch.einsum('ik,jk->ij', normalized_embeddings, normalized_embeddings)
         exp_sim = torch.exp(cos_sim)
 
@@ -57,7 +129,8 @@ class WeightedSupTConLoss(nn.Module):
             
             # Apply weights to the phoneme class, if not present in dict, defaults to 1.0,
             # meaning no extra punishment or reward.
-            weight = self.weights.get(phoneme_class.item(), 1.0)
+            phonemes_label = phoneme_inventory[phoneme_class.item()]
+            weight = self.weights.get(phonemes_label, 1.0)
             weighted_class_loss = class_loss * weight
 
             final_loss += weighted_class_loss
@@ -80,22 +153,20 @@ class CrossConLoss(nn.Module):
         Returns:
             torch.Tensor: The computed cross-domain contrastive loss.
         """
-        T = x.size(1) 
-        B, _, C = x.shape
-
+        B, T, C = x.shape
         combined = torch.concat([x, y], dim=1)  # shape (B, 2T, C)
 
         norm_combined = combined / combined.norm(dim=2, keepdim=True)
         sim_matrix = torch.einsum('bik,bjk->bij', norm_combined, norm_combined)
 
         # Positive mask
-        pos_mask = torch.zeros(2*T, 2*T, dtype=bool)
-        rows = torch.arange(T)
-        pos_mask[rows, rows + T] = True  # (tri_u)
-        pos_mask[rows + T, rows] = True  # (tri_d)
+        pos_mask = torch.zeros(2*T, 2*T, dtype=torch.bool, device=x.device)
+        rows = torch.arange(T, device=x.device)
+        pos_mask[rows, rows + T] = True  # tri_u
+        pos_mask[rows + T, rows] = True  # tri_d
 
         # Negative mask
-        neg_mask = (~pos_mask)
+        neg_mask = (~pos_mask) 
         neg_mask[torch.eye(2*T, dtype=bool)] = False  # Remove self-similarity
 
         numerator = torch.exp(sim_matrix.masked_select(pos_mask)).view(B, -1)
@@ -105,25 +176,27 @@ class CrossConLoss(nn.Module):
 
         return contrastive_loss
 
-
 class KoLeoLoss(nn.Module):
     def __init__(self):
         super().__init__()
-        self.pdist = nn.PairwiseDistance(2, eps=1e-8)
+        self.pdist = nn.PairwiseDistance(p=2, eps=1e-8)
 
     def pairwise_NNs_inner(self, x):
-        dots = torch.mm(x, x.t())
-        n = x.shape[0]
-        dots.view(-1)[::(n + 1)].fill_(-1)  # Fill diagonal with -1 to ignore self-comparison
-        _, I = torch.max(dots, dim=1)  # Find index of max dot product (nearest neighbor)
+        x_flat = x.view(-1, x.size(-1))
+        dots = torch.matmul(x_flat, x_flat.t())
+        n = x_flat.shape[0]
+        dots.view(-1)[::n+1].fill_(-1)
+        _, I = torch.max(dots, dim=1)
+
         return I
 
     def forward(self, emg_latent, emg_parallel_latent, eps=1e-8):
-        joint_embedding = torch.cat([emg_latent, emg_parallel_latent], dim=1)
-        joint_embedding = F.normalize(joint_embedding, p=2, dim=1, eps=eps)
+        joint_embedding = torch.cat([emg_latent, emg_parallel_latent], dim=-1)
+        joint_embedding = F.normalize(joint_embedding, p=2, dim=-1, eps=eps)
         
         I = self.pairwise_NNs_inner(joint_embedding)
-        distances = self.pdist(joint_embedding, joint_embedding[I])
+        distances = self.pdist(joint_embedding.view(-1, joint_embedding.size(-1)), 
+                               joint_embedding.view(-1, joint_embedding.size(-1))[I])
         
         loss = -torch.log(distances + eps).mean()
         return loss
@@ -184,6 +257,15 @@ class Model(nn.Module):
 
         self.emg_linear = nn.Linear(FLAGS.model_size, FLAGS.model_size)
 
+        self.emg_parallel_conv_blocks = nn.Sequential(
+            ResBlock(112, FLAGS.model_size, 1),
+            ResBlock(FLAGS.model_size, FLAGS.model_size, 1),
+            ResBlock(FLAGS.model_size, FLAGS.model_size, 1),
+        )
+
+        self.emg_parallel_linear = nn.Linear(FLAGS.model_size, FLAGS.model_size)
+
+
         self.audio_conv_blocks = nn.Sequential(
                 ResBlock(
                     80, FLAGS.model_size, 2
@@ -203,13 +285,14 @@ class Model(nn.Module):
             self.w_aux = nn.Linear(FLAGS.model_size, num_aux_outs)
 
     def _decoder(self, x):
-        x = x.transpose(0, 1)  
+        x = x.transpose(0, 1)  # put time first
         x = self.transformer(x)
         x = x.transpose(0, 1)
         x = self.w_out(x)
 
-        return F.log_softmax(x, 2)
-    def _conv(x_raw, conv_block, linear_layer):
+        return x
+
+    def _conv(self, x_raw, conv_block, linear_layer):
         x_raw = x_raw.transpose(1,2) # put channel before time for conv
         x_raw = conv_block(x_raw)
         x_raw = x_raw.transpose(1,2)
@@ -222,21 +305,20 @@ class Model(nn.Module):
         # audio_x is (B, T, C) Mel-specto
         # What's session for?
 
-
         # EMG
         if self.training:
             r = random.randrange(8)
             if r > 0:
                 emg_x[:,:-r,:] = emg_x[:,r:,:] # shift left r
                 emg_x[:,-r:,:] = 0
-
                 emg_voiced_parallel_x[:,:-r,:] = emg_voiced_parallel_x[:,r:,:] # shift left r
                 emg_voiced_parallel_x[:,-r:,:] = 0
 
         emg_latent = self._conv(emg_x,  self.emg_conv_blocks, self.emg_linear)
         emg_pred = self._decoder(emg_latent)
 
-        emg_parallel_latent= self._conv(emg_voiced_parallel_x, self.emg_conv_blocks, self.emg_linear)
+        emg_parallel_latent= self._conv(emg_voiced_parallel_x, self.emg_parallel_conv_blocks, self.emg_parallel_linear)
+
 
         # Audio
         audio_latent = self._conv(audio_x,  self.audio_conv_blocks, self.audio_linear)
