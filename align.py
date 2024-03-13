@@ -5,7 +5,7 @@ from numba import jit
 
 import torch
 
-@jit
+@jit(nopython=True)
 def time_warp(costs):
     dtw = np.zeros_like(costs)
     dtw[0,1:] = np.inf
@@ -16,7 +16,6 @@ def time_warp(costs):
             dtw[i,j] = costs[i,j] + min(dtw[i-1,j],dtw[i,j-1],dtw[i-1,j-1])
     return dtw
 
-# TODO: benchmark vs https://github.com/slaypni/fastdtw/tree/master/fastdtw
 def align_from_distances(distance_matrix, debug=False):
     # for each position in spectrum 1, returns best match position in spectrum2
     # using monotonic alignment
