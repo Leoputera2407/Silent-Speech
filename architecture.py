@@ -26,7 +26,6 @@ phoneme_inventory = [
     'sh','t','th','uh','uw','v',
     'w','y','z','zh','sil'
 ]
-
 class WeightedSupTConLoss(nn.Module):
     def __init__(self, weights):
         """
@@ -43,45 +42,40 @@ class WeightedSupTConLoss(nn.Module):
         Calculate the Weighted Supervised Contrastive Loss.
 
         Args:
-            embeddings (torch.Tensor): The embeddings for each phoneme, shape (batch_size, time_steps, embedding_dim).
-            phonemes (torch.Tensor): The phoneme classes for each embedding, shape (batch_size, time_steps).
+            embeddings (torch.Tensor): The embeddings for each phoneme, shape (batch_size, embedding_dim).
+            phonemes (torch.Tensor): The phoneme classes for each embedding, shape (batch_size, ).
 
         Returns:
             torch.Tensor: The calculated loss.
         """
-        B, T, C = embeddings.size()
-        total_loss = 0.0
-        for t in range(T):
-            # Process embeddings one time step at a time
-            emb_t = embeddings[:, t, :]  # shape: (batch_size, embedding_dim)
-            phn_t = phonemes[:, t]  # shape: (batch_size,)
+        normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
+        cos_sim = torch.einsum('ik,jk->ij', normalized_embeddings, normalized_embeddings)
+        exp_sim = torch.exp(cos_sim)
+
+        eye_mask = torch.eye(phonemes.size(0), dtype=torch.bool, device=embeddings.device)
+        den_mask = ~eye_mask
+
+        phoneme_classes = torch.unique(phonemes)
+        final_loss = 0.0
+
+        for phoneme_class in phoneme_classes:
+            class_mask = phonemes == phoneme_class
+            pos_mask = torch.einsum('i,j->ij', class_mask, class_mask) & ~eye_mask
+
+            numerator = (exp_sim * pos_mask).sum(dim=1)[class_mask]
+            denominator = (exp_sim * den_mask).sum(dim=1)[class_mask]
+
+            class_loss = -torch.log(numerator / (denominator + FLAGS.suptcon_epsilon)).mean()
             
-            normalized_embeddings = F.normalize(emb_t, p=2, dim=1)
-            cos_sim = torch.einsum('ik,jk->ij', normalized_embeddings, normalized_embeddings)
-            exp_sim = torch.exp(cos_sim)
+            # Apply weights to the phoneme class, if not present in dict, defaults to 1.0,
+            # meaning no extra punishment or reward.
+            phonemes_label = phoneme_inventory[phoneme_class.item()]
+            weight = self.weights.get(phonemes_label, 1.0)
+            weighted_class_loss = class_loss * weight
 
-            eye_mask = torch.eye(B, dtype=torch.bool, device=embeddings.device)
-            den_mask = ~eye_mask
+            final_loss += weighted_class_loss
 
-            phoneme_classes = torch.unique(phn_t)
-            loss_t = 0.0
-
-            for phoneme_class in phoneme_classes:
-                class_mask = phn_t == phoneme_class
-                pos_mask = torch.einsum('i,j->ij', class_mask, class_mask) & ~eye_mask
-                numerator = (exp_sim * pos_mask).sum(dim=1)[class_mask]
-                denominator = (exp_sim * den_mask).sum(dim=1)[class_mask]
-
-                class_loss = -torch.log(numerator / (denominator + 1e-6)).mean()
-                phonemes_label = phoneme_inventory[phoneme_class.item()]
-                weight = self.weights.get(phonemes_label, 1.0)
-                weighted_class_loss = class_loss * weight
-
-                loss_t += weighted_class_loss
-
-            total_loss += loss_t / len(phoneme_classes)
-
-        return total_loss / T
+        return final_loss / len(phoneme_classes)
 
 
 class CrossConLoss(nn.Module):

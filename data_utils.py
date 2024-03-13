@@ -8,6 +8,7 @@ import jiwer
 from unidecode import unidecode
 
 import torch
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
 from absl import flags
@@ -176,6 +177,24 @@ def decollate_tensor(tensor, lengths):
         results.append(tensor[idx:idx+length])
         idx += length
     return results
+
+def extract_aligned_sequences(source_flat, alignment_indices, target_shape):
+    # Extract aligned sequences based on alignment indices
+    aligned_flat = source_flat[alignment_indices]
+    target_num_elements = np.prod(target_shape)
+    
+    num_elements = aligned_flat.shape[0] * aligned_flat.shape[1]
+    if num_elements > target_num_elements:
+        # If more elements than expected, truncate excess elements
+        aligned_flat = aligned_flat[:target_num_elements]
+    elif num_elements < target_num_elements:
+        # If fewer elements, pad with zeros (or another strategy as needed)
+        padding_size = target_num_elements - num_elements
+        padding = torch.zeros(padding_size, aligned_flat.shape[1], device=aligned_flat.device)
+        aligned_flat = torch.cat([aligned_flat, padding], dim=0)
+    
+    aligned_reshaped = aligned_flat.view(target_shape)
+    return aligned_reshaped
 
 def splice_audio(chunks, overlap):
     chunks = [c.copy() for c in chunks] # copy so we can modify in place

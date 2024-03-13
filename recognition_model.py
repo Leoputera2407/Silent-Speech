@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from read_emg import EMGDataset, SizeAwareSampler
 from align import align_from_distances
 from architecture import Model, KoLeoLoss, CrossConLoss, WeightedSupTConLoss
-from data_utils import combine_fixed_length, decollate_tensor
+from data_utils import combine_fixed_length, decollate_tensor, extract_aligned_sequences
 
 from absl import flags
 FLAGS = flags.FLAGS
@@ -118,7 +118,6 @@ def train_model(trainset, devset, device, n_epochs=200):
             emg_voiced_parallel = combine_fixed_length(example['parallel_voiced_emg'], 200).to(device)
             audio = combine_fixed_length(example['audio_features'], 200).to(device)
             sess = combine_fixed_length(example['session_ids'], 200).to(device)
-            phonemes = torch.concatenate(example['phonemes']).to(device)
 
             emg_length = example['lengths']
             audio_length = example['audio_feature_lengths']
@@ -131,13 +130,24 @@ def train_model(trainset, devset, device, n_epochs=200):
                 audio,
                 sess
             )
-            emg_pred = nn.utils.rnn.pad_sequence(decollate_tensor(emg_pred, emg_length)).to(device)
-            emg_latent = nn.utils.rnn.pad_sequence(decollate_tensor(emg_latent, emg_length)).to(device)
-            emg_parallel_latent = nn.utils.rnn.pad_sequence(decollate_tensor(emg_parallel_latent, emg_length)).to(device)
-       
+            emg_pred = nn.utils.rnn.pad_sequence(
+                decollate_tensor(emg_pred, emg_length), 
+                batch_first=False,
+            ).to(device)
+            emg_latent = nn.utils.rnn.pad_sequence(
+                decollate_tensor(emg_latent, emg_length),
+                batch_first=False,
+            ).to(device)
+            emg_parallel_latent =  nn.utils.rnn.pad_sequence(
+                decollate_tensor(
+                    emg_parallel_latent, [e.shape[0] for e in example["parallel_voiced_emg"]]
+                ), batch_first=False,
+            ).to(device)
+            
             #audio_pred = F.log_softmax(audio_pred, 2)
             #audio_pred = nn.utils.rnn.pad_sequence(decollate_tensor(audio_pred, audio_length))
             emg_audio_label = nn.utils.rnn.pad_sequence(parallel_emg_audio_label, batch_first=True).to(device)
+            phonemes =  nn.utils.rnn.pad_sequence(example['phonemes'], batch_first=True).to(device)
 
             # Indv modalities ctc losses
             emg_ctc_loss = F.ctc_loss(
@@ -160,27 +170,27 @@ def train_model(trainset, devset, device, n_epochs=200):
             n_batch, n_time, d = emg_latent.shape
             emg_latent_flat = emg_latent.view(-1, d)
             emg_parallel_latent_flat = emg_parallel_latent.view(-1, d)
+            phonemes_flat = phonemes.flatten()
 
             costs = torch.cdist(
-                emg_latent_flat, 
                 emg_parallel_latent_flat,
+                emg_latent_flat, 
             ).squeeze(0)
             
             alignment = align_from_distances(costs.T.detach().cpu().numpy())
-            emg_parallel_aligned_flat = emg_parallel_latent_flat[alignment]
-            emg_parallel_aligned = emg_parallel_aligned_flat.view(n_batch, n_time, d)
+            emg_parallel_aligned = emg_parallel_latent_flat[alignment].view(n_batch, n_time, d)
          
             # Phoneme parallels to voiced emg, so it'll be dtw-adjusted the same way
             # TODO: This is quite sketch, and I'm adding subsampling at 8 as per chatGPT suggestion, 
             # need to think deeper here
-            adjusted_phonemes_indices = [index // 8 for index in alignment]
-            phoneme_parallel_aligned = phonemes[adjusted_phonemes_indices].view(n_batch, n_time)
+            # adjusted_phonemes_indices = [index // 8 for index in alignment]
+            phoneme_parallel_aligned_flat = phonemes_flat[alignment]
            
             # CrossCon (between silent latent and aligned emg latent)
             crosscon_loss =  crosscon_loss_function(emg_latent, emg_parallel_aligned)
 
             # supTcon (between predicted phonemes and emg_latent)
-            wsuptcon_loss = weighted_suptcon_loss_function(emg_latent, phoneme_parallel_aligned)
+            wsuptcon_loss = weighted_suptcon_loss_function(emg_latent_flat, phoneme_parallel_aligned_flat)
 
             # KoLeo Regularizer Loss
             # SInce we're cross-conning with emg_parallel, let's try it with emg_parallel first.
