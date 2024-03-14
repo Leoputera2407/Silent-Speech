@@ -3,7 +3,7 @@ import sys
 import numpy as np
 import logging
 import subprocess
-#from ctcdecode import CTCBeamDecoder
+from ctcdecode import CTCBeamDecoder
 import jiwer
 import tqdm
 
