@@ -249,9 +249,13 @@ class Model(nn.Module):
         if self.training:
             r = random.randrange(8)
             if r > 0:
-                emg_x[:,:-r,:] = emg_x[:,r:,:] # shift left r
+                # Ideally you want to pin to memory, however by poor man 2x RTX 2070. doesn't have a 
+                # CUDA compatible pyTorch that allows pin-ing memory :(, so got to clone them now 
+                emg_x_clone = emg_x.clone()  
+                emg_x[:,:-r,:] = emg_x_clone[:,r:,:]  # Shift left r using the cloned tensor
                 emg_x[:,-r:,:] = 0
-                emg_voiced_parallel_x[:,:-r,:] = emg_voiced_parallel_x[:,r:,:] # shift left r
+                emg_voiced_parallel_x_clone = emg_voiced_parallel_x.clone() 
+                emg_voiced_parallel_x[:,:-r,:] = emg_voiced_parallel_x_clone[:,r:,:]  # Shift left r using the cloned tensor
                 emg_voiced_parallel_x[:,-r:,:] = 0
 
         emg_latent = self._conv(emg_x,  self.emg_conv_blocks, self.emg_linear)

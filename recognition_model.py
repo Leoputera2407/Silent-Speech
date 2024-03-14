@@ -3,7 +3,7 @@ import sys
 import numpy as np
 import logging
 import subprocess
-#from ctcdecode import CTCBeamDecoder
+from ctcdecode import CTCBeamDecoder
 import jiwer
 import tqdm
 
@@ -133,17 +133,16 @@ def train_model(trainset, devset, device, n_epochs=200):
             emg_pred = nn.utils.rnn.pad_sequence(
                 decollate_tensor(emg_pred, emg_length), 
                 batch_first=False,
-            ).to(device)
+            ).to(device) # CTC requires seq to be first
             emg_latent = nn.utils.rnn.pad_sequence(
                 decollate_tensor(emg_latent, emg_length),
-                batch_first=False,
+                batch_first=True,
             ).to(device)
             emg_parallel_latent =  nn.utils.rnn.pad_sequence(
                 decollate_tensor(
                     emg_parallel_latent, [e.shape[0] for e in example["parallel_voiced_emg"]]
-                ), batch_first=False,
+                ), batch_first=True,
             ).to(device)
-            
             #audio_pred = F.log_softmax(audio_pred, 2)
             #audio_pred = nn.utils.rnn.pad_sequence(decollate_tensor(audio_pred, audio_length))
             emg_audio_label = nn.utils.rnn.pad_sequence(parallel_emg_audio_label, batch_first=True).to(device)
