@@ -3,7 +3,7 @@ import sys
 import numpy as np
 import logging
 import subprocess
-from ctcdecode import CTCBeamDecoder
+#from ctcdecode import CTCBeamDecoder
 import jiwer
 import tqdm
 
@@ -109,7 +109,7 @@ def train_model(trainset, devset, device, n_epochs=200):
         losses = []
         for example in tqdm.tqdm(dataloader, 'Train step', disable=None):
             if not example['raw_emg']:
-                print("Skipping batch due to empty 'raw_emg'")
+                logging.info("Skipping batch due to empty 'raw_emg'")
                 continue
     
             schedule_lr(batch_idx)
@@ -182,8 +182,8 @@ def train_model(trainset, devset, device, n_epochs=200):
             emg_parallel_aligned = emg_parallel_latent_flat[alignment].view(n_batch, n_time, d)
          
             # Phoneme parallels to voiced emg, so it'll be dtw-adjusted the same way
-            # NOTE: No need to down-sample the phonemes here.
-            # I did a zero-reduce conv for emg_parallel. Emg_parallel maps 1-1 to phonemes
+            # NOTE: No need to down-sample to the phonemes here.
+            # I did a no-reduce conv for emg_parallel. Emg_parallel maps 1-1 to phonemes
             phoneme_parallel_aligned_flat = phonemes_flat[alignment]
            
             # CrossCon (between silent latent and aligned emg latent)
@@ -248,6 +248,7 @@ def main():
     logging.info('train / dev split: %d %d',len(trainset),len(devset))
 
     device = 'cuda' if torch.cuda.is_available() and not FLAGS.debug else 'cpu'
+    print(device)
 
     model = train_model(trainset, devset, device)
 
